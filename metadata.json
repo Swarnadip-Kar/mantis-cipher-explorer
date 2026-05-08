@@ -1,5 +1,5 @@
 {
-  "name": "Mantis Cipher Explorer",
+  "name": "Remix: Remix: Mantis Cipher Explorer",
   "description": "An interactive 3D simulator for the MANTIS block cipher. Visualize 64-bit data blocks, tweakable transformations, and internal state changes through encryption and decryption stages with a timeline-controllable UI.",
   "requestFramePermissions": [],
   "majorCapabilities": []

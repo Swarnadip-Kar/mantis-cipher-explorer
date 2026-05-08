@@ -12,6 +12,10 @@ export interface MantisStep {
   state: State;
   tweak: State;
   roundTweakey?: State;
+  stepRc?: State;
+  stepRk?: State;
+  stepRkShifted?: State; // (k1 >>> 4*i)
+  stepRcPrev?: State;    // LFSR input
   round: number;
   type: 'initial' | 'add_tweakey' | 'sub_cells' | 'shuffle_cells' | 'mix_columns' | 'mid' | 'round_complete' | 'final';
 }
@@ -25,7 +29,7 @@ export const SHUFFLE_INV: number[] = new Array(16);
 SHUFFLE.forEach((v, i) => (SHUFFLE_INV[v] = i));
 
 // Tweak Permutation h
-const H_PERM: number[] = [6, 5, 14, 15, 0, 1, 2, 3, 7, 12, 13, 4, 8, 9, 10, 11];
+export const H_PERM: number[] = [6, 5, 14, 15, 0, 1, 2, 3, 7, 12, 13, 4, 8, 9, 10, 11];
 
 // Round Constants
 const RC = [
@@ -89,7 +93,7 @@ function shuffleCells(state: State, inverse = false): State {
   const p = inverse ? SHUFFLE_INV : SHUFFLE;
   const nextFlat = new Array(16);
   for (let i = 0; i < 16; i++) {
-    nextFlat[p[i]] = flat[i];
+    nextFlat[i] = flat[p[i]];
   }
   return unflattenState(nextFlat);
 }
@@ -123,8 +127,43 @@ function alphaConstant(round: number): State {
   return unflattenState(RC[round]);
 }
 
-// Alpha constant for key reflecting (decryption)
-export const ALPHA = [0x2, 0x4, 0x3, 0xf, 0x6, 0xa, 0x8, 0x8, 0x8, 0x5, 0xa, 0x3, 0x0, 0x8, 0xd, 0x3];
+const ALPHA_BIGINT = 0x243F6A8885A308D3n;
+
+function lfsr64(rc: bigint): bigint {
+  const feedback = ((rc >> 63n) ^ (rc >> 3n) ^ (rc >> 2n) ^ rc) & 1n;
+  return ((rc << 1n) & 0xFFFFFFFFFFFFFFFFn) | feedback;
+}
+
+function ror64(x: bigint, n: bigint): bigint {
+  const shift = n % 64n;
+  return ((x >> shift) | (x << (64n - shift))) & 0xFFFFFFFFFFFFFFFFn;
+}
+
+function generateRoundKeys(k1: bigint, RC: bigint[], r: number): bigint[] {
+  const rks: bigint[] = [];
+  for (let i = 0; i < r; i++) {
+    const shift = BigInt(4 * (i + 1));
+    const rk = ror64(k1, shift) ^ RC[i];
+    rks.push(rk);
+  }
+  return rks;
+}
+
+function toState(val: bigint): State {
+  const s = createEmptyState();
+  for (let i = 0; i < 16; i++) {
+    s[Math.floor(i / 4)][i % 4] = Number((val >> BigInt((15 - i) * 4)) & 0xFn);
+  }
+  return s;
+}
+
+function fromState(s: State): bigint {
+  let val = 0n;
+  for (let i = 0; i < 16; i++) {
+    val = (val << 4n) | BigInt(s[Math.floor(i / 4)][i % 4]);
+  }
+  return val;
+}
 
 /**
  * Mantis encryption / decryption
@@ -139,120 +178,234 @@ export function mantisCipher(
 ): MantisStep[] {
   const history: MantisStep[] = [];
   
-  // Initialize keys
-  let k0 = key0;
-  let k1 = key1;
+  let currentStepRc: State | undefined = undefined;
+  let currentStepRk: State | undefined = undefined;
 
-  // Derivation of k0_prime relative to the raw key0
-  const flatK0_ = flattenState(key0);
-  let k0_val_ = 0n;
-  for (let i = 0; i < 16; i++) {
-    k0_val_ = (k0_val_ << 4n) | BigInt(flatK0_[i]);
-  }
-  const k0_prime_val_ = ((k0_val_ >> 1n) | ((k0_val_ & 1n) << 63n)) & 0xFFFFFFFFFFFFFFFFn;
-  const flatK0Prime_ = new Array(16);
-  for (let i = 15; i >= 0; i--) {
-    flatK0Prime_[i] = Number((k0_prime_val_ >> BigInt((15 - i) * 4)) & 0xFn);
-  }
-  let k0_prime = unflattenState(flatK0Prime_);
-
-  if (decrypt) {
-    // For decryption, the exact opposite keys are applied.
-    // MANTIS decryption property: swap k0 and k0_prime, and XOR k1 with ALPHA
-    const temp = k0;
-    k0 = k0_prime;
-    k0_prime = temp;
-    k1 = xorState(k1, unflattenState(ALPHA));
-  }
-
-  let currentState = plaintext;
-  let currentTweak = tweak;
+  let currentStepRcPrev: State | undefined = undefined;
+  let currentStepRkShifted: State | undefined = undefined;
 
   const push = (name: string, type: MantisStep['type'], r: number, additionalProps?: Partial<MantisStep>) => {
     history.push({
       name,
       state: JSON.parse(JSON.stringify(currentState)),
       tweak: JSON.parse(JSON.stringify(currentTweak)),
+      stepRc: currentStepRc ? JSON.parse(JSON.stringify(currentStepRc)) : undefined,
+      stepRcPrev: currentStepRcPrev ? JSON.parse(JSON.stringify(currentStepRcPrev)) : undefined,
+      stepRk: currentStepRk ? JSON.parse(JSON.stringify(currentStepRk)) : undefined,
+      stepRkShifted: currentStepRkShifted ? JSON.parse(JSON.stringify(currentStepRkShifted)) : undefined,
       round: r,
       type,
       ...additionalProps
     });
   };
 
-  push('Plaintext', 'initial', 0);
+  const k0_val = fromState(key0);
+  const k1_val = fromState(key1);
+  const tweak_val = fromState(tweak);
 
-  // Initial AddTweakey
-  // k0 ^ k1 ^ tweak
-  const initTweakey = xorState(xorState(k0, k1), currentTweak);
-  currentState = xorState(currentState, k0);
-  currentState = xorState(currentState, k1);
-  currentState = xorState(currentState, currentTweak);
-  push('Initial AddTweakey', 'add_tweakey', 0, { roundTweakey: initTweakey });
+  let k0p_val = ror64(k0_val, 1n) ^ (k0_val >> 63n);
+  let kb1_val = k1_val ^ ALPHA_BIGINT;
+  
+  let k0_n = key0;
+  let k1_n = key1;
+  let k0p_n = toState(k0p_val);
+  let kb1_n = toState(kb1_val);
+  let alp_n = toState(ALPHA_BIGINT);
+  
+  const T = tweak;
 
-  // Outer Rounds (FORWARD)
-  for (let r = 0; r < rounds; r++) {
-    currentState = subCells(currentState);
-    push(`Round ${r} SubCells`, 'sub_cells', r);
-    
-    // Add Round Constant
-    const roundTweakey = xorState(xorState(alphaConstant(r), k1), currentTweak);
-    currentState = xorState(currentState, alphaConstant(r));
-    // Add k1
-    currentState = xorState(currentState, k1);
-    // Add current tweak
-    currentState = xorState(currentState, currentTweak);
-    push(`Round ${r} AddKey/C/T`, 'add_tweakey', r, { roundTweakey });
+  let r0 = k0_val ^ tweak_val;
 
-    if (r < rounds - 1 || true) {
-      currentState = shuffleCells(currentState);
+  let ri_vals: bigint[] = [];
+  let temp_r = r0;
+  for(let i = 0; i < rounds; i++) {
+    ri_vals.push(temp_r);
+    temp_r = lfsr64(temp_r);
+  }
+
+  let rks_vals = generateRoundKeys(k1_val, ri_vals, rounds);
+
+  let hp: State[] = [T];
+  for(let i = 0; i < rounds; i++) {
+    hp.push(permuteTweak(hp[i]));
+  }
+
+  let currentState = plaintext;
+  let currentTweak = hp[0];
+
+  push(decrypt ? 'Ciphertext' : 'Plaintext', 'initial', 0);
+
+  if (!decrypt) {
+    // ENCRYPT
+
+    // Initial whitening:  s ⊕= k0 ⊕ k1 ⊕ T
+    currentStepRc = k0_n;
+    currentStepRk = k1_n;
+    const initTweakey = xorState(xorState(k0_n, k1_n), T);
+    currentState = xorState(currentState, initTweakey);
+    push('Initial AddTweakey', 'add_tweakey', 0, { roundTweakey: initTweakey });
+
+    // Forward half
+    for (let r = 1; r <= rounds; r++) {
+      currentTweak = hp[r];
+      currentStepRcPrev = toState(r === 1 ? r0 : ri_vals[r-2]);
+      currentStepRc = toState(ri_vals[r-1]);
+      currentStepRkShifted = toState(ror64(k1_val, BigInt(4 * r)));
+      currentStepRk = toState(rks_vals[r-1]);
+      
+      currentState = subCells(currentState);
+      push(`Round ${r} SubCells`, 'sub_cells', r);
+
+      let rcState = currentStepRc;
+      let rk_n = currentStepRk;
+      let tk = xorState(hp[r], rk_n);
+
+      currentState = xorState(currentState, tk);
+      currentState = xorState(currentState, rcState);
+      
+      let roundTweakey = xorState(rcState, tk);
+      push(`Round ${r} AddKey/C/T`, 'add_tweakey', r, { roundTweakey });
+
+      currentState = shuffleCells(currentState, false);
       push(`Round ${r} ShuffleCells`, 'shuffle_cells', r);
+
       currentState = mixColumns(currentState);
       push(`Round ${r} MixColumns`, 'mix_columns', r);
     }
-    push(`Round ${r} Output`, 'round_complete', r);
-    currentTweak = permuteTweak(currentTweak);
-  }
-
-  // Middle Layer
-  currentState = subCells(currentState);
-  push('Middle SubCells', 'sub_cells', rounds);
-  currentState = mixColumns(currentState);
-  push('Middle MixColumns', 'mix_columns', rounds);
-  currentState = subCells(currentState, true);
-  push('Middle InvSubCells', 'sub_cells', rounds);
-  push('Middle Layer Output', 'round_complete', rounds);
-
-  // Outer Rounds (BACKWARD)
-  for (let r = rounds - 1; r >= 0; r--) {
-    currentTweak = permuteTweak(currentTweak); // Reverse tweak permutation? Actually MANTIS uses symmetric structure
     
+    // Middle layer
+    currentState = subCells(currentState);
+    push(`Middle SubCells`, 'sub_cells', rounds);
     currentState = mixColumns(currentState);
-    push(`Round ${r}' MixColumns`, 'mix_columns', r);
-    currentState = shuffleCells(currentState, true);
-    push(`Round ${r}' InvShuffleCells`, 'shuffle_cells', r);
+    push(`Middle MixColumns`, 'mix_columns', rounds);
+    currentState = subCells(currentState);
+    push(`Middle InvSubCells`, 'sub_cells', rounds);
 
-    // Add Alpha prime (alpha ^ alpha_constant)
-    // In Mantis, alpha_prime is used in backward branch
-    const roundTweakey = xorState(xorState(xorState(alphaConstant(r), unflattenState(ALPHA)), k1), currentTweak);
-    currentState = xorState(currentState, alphaConstant(r));
-    currentState = xorState(currentState, unflattenState(ALPHA));
-    currentState = xorState(currentState, k1); // Involutory
-    currentState = xorState(currentState, currentTweak);
-    push(`Round ${r}' AddKey/C/T`, 'add_tweakey', r, { roundTweakey });
+    push(`Middle Layer Output`, 'round_complete', rounds);
 
-    currentState = subCells(currentState, true);
-    push(`Round ${r}' InvSubCells`, 'sub_cells', r);
-    push(`Round ${r}' Output`, 'round_complete', r);
+    // Backward half
+    for (let r = rounds; r >= 1; r--) {
+      currentTweak = hp[r];
+      currentStepRcPrev = toState(r === 1 ? r0 : ri_vals[r-2]);
+      currentStepRkShifted = toState(ror64(k1_val, BigInt(4 * r)) ^ ALPHA_BIGINT);
+      currentStepRc = toState(ri_vals[r-1]);
+      currentStepRk = toState(rks_vals[r-1] ^ ALPHA_BIGINT);
+      
+      currentState = mixColumns(currentState);
+      push(`Round ${r}' InvMixColumns`, 'mix_columns', rounds * 2 - r + 1);
+      
+      currentState = shuffleCells(currentState, true);
+      push(`Round ${r}' InvShuffleCells`, 'shuffle_cells', rounds * 2 - r + 1);
+
+      let rcState = currentStepRc;
+      let rk_n = currentStepRk;
+      let tk = xorState(hp[r], rk_n);
+
+      currentState = xorState(currentState, tk);
+      currentState = xorState(currentState, rcState);
+      
+      let roundTweakey = xorState(rcState, tk);
+      push(`Round ${r}' AddKey/C/T`, 'add_tweakey', rounds * 2 - r + 1, { roundTweakey });
+
+      currentState = subCells(currentState);
+      push(`Round ${r}' InvSubCells`, 'sub_cells', rounds * 2 - r + 1);
+    }
+
+    // Final whitening: s ⊕= k0p ⊕ k1 ⊕ α ⊕ T
+    currentStepRc = k0p_n;
+    currentStepRk = xorState(k1_n, alp_n);
+    const finalTweakey = xorState(xorState(xorState(k0p_n, k1_n), alp_n), T);
+    currentState = xorState(currentState, finalTweakey);
+    push('Final AddTweakey', 'add_tweakey', rounds * 2 + 1, { roundTweakey: finalTweakey });
+
+  } else {
+    // DECRYPT
+
+    // new k0 = k0p
+    // new k1 = k1_n ^ ALPHA
+    // init whitening = k0p ^ kb1_n ^ T
+    currentStepRc = k0p_n;
+    currentStepRk = kb1_n;
+    const initTweakey = xorState(xorState(k0p_n, kb1_n), T);
+    currentState = xorState(currentState, initTweakey);
+    push('Initial AddTweakey', 'add_tweakey', 0, { roundTweakey: initTweakey });
+
+    // Forward rounds
+    for (let r = 1; r <= rounds; r++) {
+      currentTweak = hp[r];
+      currentStepRcPrev = toState(r === 1 ? r0 : ri_vals[r-2]);
+      currentStepRkShifted = toState(ror64(k1_val, BigInt(4 * r)) ^ ALPHA_BIGINT);
+      currentStepRc = toState(ri_vals[r-1]);
+      currentStepRk = toState(rks_vals[r-1] ^ ALPHA_BIGINT);
+      
+      currentState = subCells(currentState);
+      push(`Round ${r} SubCells`, 'sub_cells', r);
+
+      let rcState = currentStepRc;
+      let rk_n = currentStepRk;
+      let tk = xorState(hp[r], rk_n);
+
+      currentState = xorState(currentState, tk);
+      currentState = xorState(currentState, rcState);
+      
+      let roundTweakey = xorState(rcState, tk);
+      push(`Round ${r} AddKey/C/T`, 'add_tweakey', r, { roundTweakey });
+
+      currentState = shuffleCells(currentState, false);
+      push(`Round ${r} ShuffleCells`, 'shuffle_cells', r);
+
+      currentState = mixColumns(currentState);
+      push(`Round ${r} MixColumns`, 'mix_columns', r);
+    }
+    
+    // Middle layer
+    currentState = subCells(currentState);
+    push(`Middle SubCells`, 'sub_cells', rounds);
+    currentState = mixColumns(currentState);
+    push(`Middle MixColumns`, 'mix_columns', rounds);
+    currentState = subCells(currentState);
+    push(`Middle InvSubCells`, 'sub_cells', rounds);
+    push(`Middle Layer Output`, 'round_complete', rounds);
+
+    // Backward rounds
+    for (let r = rounds; r >= 1; r--) {
+      currentTweak = hp[r];
+      
+      currentState = mixColumns(currentState);
+      push(`Round ${r}' InvMixColumns`, 'mix_columns', rounds * 2 - r + 1);
+      
+      currentState = shuffleCells(currentState, true);
+      push(`Round ${r}' InvShuffleCells`, 'shuffle_cells', rounds * 2 - r + 1);
+
+      currentStepRcPrev = toState(r === 1 ? r0 : ri_vals[r-2]);
+      currentStepRkShifted = toState(ror64(k1_val, BigInt(4 * r)));
+      currentStepRc = toState(ri_vals[r-1]);
+      currentStepRk = toState(rks_vals[r-1]);
+      let rcState = currentStepRc;
+      let rk_n = currentStepRk;
+      let tk = xorState(hp[r], rk_n);
+
+      currentState = xorState(currentState, tk);
+      currentState = xorState(currentState, rcState);
+      
+      let roundTweakey = xorState(rcState, tk);
+      push(`Round ${r}' AddKey/C/T`, 'add_tweakey', rounds * 2 - r + 1, { roundTweakey });
+
+      currentState = subCells(currentState);
+      push(`Round ${r}' InvSubCells`, 'sub_cells', rounds * 2 - r + 1);
+    }
+
+    // Final whitening: new_k0' ⊕ new_k1 ⊕ α ⊕ T = k0 ⊕ k1 ⊕ T
+    currentStepRc = k0_n;
+    currentStepRk = k1_n;
+    const finalTweakey = xorState(xorState(k0_n, k1_n), T);
+    currentState = xorState(currentState, finalTweakey);
+    push('Final AddTweakey', 'add_tweakey', rounds * 2 + 1, { roundTweakey: finalTweakey });
+
   }
 
-  // Final AddTweakey
-  const finalTweakey = xorState(xorState(k0_prime, k1), currentTweak);
-  currentState = xorState(currentState, k0_prime);
-  currentState = xorState(currentState, k1);
-  currentState = xorState(currentState, currentTweak);
-  push('Final AddTweakey', 'add_tweakey', 0, { roundTweakey: finalTweakey });
-
-  push('Ciphertext', 'final', 0);
+  currentTweak = hp[0];
+  push(decrypt ? 'Plaintext' : 'Ciphertext', 'final', rounds * 2 + 2);
 
   return history;
 }
