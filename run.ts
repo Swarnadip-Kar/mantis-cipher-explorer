@@ -28,7 +28,7 @@ function runTest(rounds, plaintextHex, k0Hex, k1Hex, tweakHex) {
   const K0 = unflatten(k0Hex.split('').map(c => parseInt(c, 16)));
   const K1 = unflatten(k1Hex.split('').map(c => parseInt(c, 16)));
 
-  const history = mantisCipher(P, K0, K1, T, false, rounds);
+  const history = mantisCipher(P, K0, K1, T, rounds, false);
   const outState = history[history.length - 1].state;
   let outHex = flattenState(outState).map(n => n.toString(16)).join('');
   console.log(`MANTIS-${rounds} Output:`, outHex);
