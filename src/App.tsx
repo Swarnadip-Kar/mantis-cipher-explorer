@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Text, Float, Stars, Center, Bounds } from '@react-three/drei';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Pause, SkipBack, SkipForward, Info, Lock, Key, Hash, RefreshCw, Layers, Cpu, Box } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Info, Lock, Key, Hash, RefreshCw, Layers, Cpu, Box, Minimize2, Maximize2, Unlock, Locate } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { DifferentialAttackTab } from './DifferentialAttackTab';
 import { IntegralAttackTab } from './IntegralAttackTab';
@@ -51,9 +51,10 @@ interface AnimatedCellProps {
   prevValue?: number;
   speed?: number;
   rtCombineVals?: { tweak: number, rk: number, rc: number };
+  stepName?: string;
 }
 
-function AnimatedCell({ id, value, targetPos, scale = 1, isChanging, opType, stepIndex, showValues = true, xorVal, prevValue, speed = 3500, rtCombineVals }: AnimatedCellProps) {
+function AnimatedCell({ id, value, targetPos, scale = 1, isChanging, opType, stepIndex, showValues = true, xorVal, prevValue, speed = 3500, rtCombineVals, stepName = '' }: AnimatedCellProps) {
   const groupRef = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);
   const [displayValue, setDisplayValue] = useState(value);
@@ -186,7 +187,19 @@ function AnimatedCell({ id, value, targetPos, scale = 1, isChanging, opType, ste
     if (opType === 'add_tweakey' && xorVal !== undefined) {
       opText = <Text position={[0, 0.6, 0.4]} fontSize={0.25} color="#f59e0b" anchorX="center" anchorY="middle">⊕ {xorVal.toString(16).toUpperCase()}</Text>;
     } else if (opType === 'sub_cells') {
-      opText = <Text position={[0, 0.6, 0.4]} fontSize={0.25} color="#06b6d4" anchorX="center" anchorY="middle">S({prevValue !== undefined ? prevValue.toString(16).toUpperCase() : displayValue.toString(16).toUpperCase()})</Text>;
+      const isInv = stepName.toLowerCase().includes('invsubcells');
+      const valStr = prevValue !== undefined ? prevValue.toString(16).toUpperCase() : displayValue.toString(16).toUpperCase();
+      if (isInv) {
+        opText = (
+          <group position={[0, 0.6, 0.4]}>
+            <Text position={[-0.14, 0, 0]} fontSize={0.25} color="#06b6d4" anchorX="right" anchorY="middle">S</Text>
+            <Text position={[-0.14, 0.1, 0]} fontSize={0.15} color="#06b6d4" anchorX="left" anchorY="middle">-1</Text>
+            <Text position={[0.08, 0, 0]} fontSize={0.25} color="#06b6d4" anchorX="left" anchorY="middle">{`(${valStr})`}</Text>
+          </group>
+        );
+      } else {
+        opText = <Text position={[0, 0.6, 0.4]} fontSize={0.25} color="#06b6d4" anchorX="center" anchorY="middle">{`S(${valStr})`}</Text>;
+      }
     } else if (opType === 'lfsr') {
       opText = <Text position={[0, 0.6, 0.4]} fontSize={0.16} color="#ec4899" anchorX="center" anchorY="middle">LFSR Shift</Text>;
     } else if (opType === 'rk_update') {
@@ -301,6 +314,7 @@ function MantisGrid({
             xorVal={xorVal}
             speed={speed}
             rtCombineVals={rtCombineValsList ? rtCombineValsList[posIndex] : undefined}
+            stepName={label}
           />
         );
       })}
@@ -319,7 +333,11 @@ function getOperationDetail(type: string, name: string) {
   switch (type) {
     case 'initial': return "Loading state with Initial Plaintext structure.";
     case 'add_tweakey': return "XORing the state with the sub-tweakey. Sub-tweakey is derived from Key K0, K1, and Tweak T. Matrix cells are combined using bitwise XOR (⊕).";
-    case 'sub_cells': return "Applying non-linear substitution using a 4-bit S-Box. Each nibble is mapped to a new value to provide confusion.";
+    case 'sub_cells': 
+      if (name.toLowerCase().includes('invsubcells')) {
+        return "Applying non-linear inverse substitution using the 4-bit Inverse S-Box.";
+      }
+      return "Applying non-linear substitution using a 4-bit S-Box. Each nibble is mapped to a new value to provide confusion.";
     case 'shuffle_cells': return "Permuting the 16 nibbles across the 4x4 state matrix. This provides diffusion by spreading the bits.";
     case 'mix_columns': return "Multiplying each column of the state matrix by a fixed near-MDS matrix. This provides optimal diffusion within columns.";
     case 'mid': return "Applying middle transformations (SubCells, MixColumns, SubCells) to seamlessly link the forward and backward rounds.";
@@ -363,12 +381,121 @@ function HexInput({ value, onChange, className }: { value: State, onChange: (s: 
   );
 }
 
+interface CameraManagerProps {
+  viewMode: 'single' | 'compare';
+  isPlaying: boolean;
+  lockViewpoint: boolean;
+  resetViewFlag: boolean;
+  onResetDone: () => void;
+}
+
+function CameraManager({ viewMode, isPlaying, lockViewpoint, resetViewFlag, onResetDone }: CameraManagerProps) {
+  const { camera } = useThree();
+  const controlsRef = useRef<any>(null);
+  const [keys, setKeys] = useState<{ [key: string]: boolean }>({});
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
+      setKeys((k) => ({ ...k, [e.code]: true }));
+    };
+    const handleKeyUp = (e: KeyboardEvent) => setKeys((k) => ({ ...k, [e.code]: false }));
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
+  useFrame((state, delta) => {
+    if (!controlsRef.current) return;
+    
+    if (resetViewFlag) {
+      const targetPos = viewMode === 'compare' ? new THREE.Vector3(0, 1.5, 26) : new THREE.Vector3(0, 0, 16);
+      const targetTarget = new THREE.Vector3(0, 0, 0);
+      
+      state.camera.position.lerp(targetPos, 5 * delta);
+      controlsRef.current.target.lerp(targetTarget, 5 * delta);
+      
+      if (state.camera.position.distanceTo(targetPos) < 0.05 && controlsRef.current.target.distanceTo(targetTarget) < 0.05) {
+        state.camera.position.copy(targetPos);
+        controlsRef.current.target.copy(targetTarget);
+        onResetDone();
+      }
+    } else {
+      let panX = 0;
+      let panY = 0;
+      
+      if (keys['ArrowUp'] || keys['KeyW']) panY += 1;
+      if (keys['ArrowDown'] || keys['KeyS']) panY -= 1;
+      if (keys['ArrowLeft'] || keys['KeyA']) panX -= 1;
+      if (keys['ArrowRight'] || keys['KeyD']) panX += 1;
+      
+      if (keys['ShiftLeft'] || keys['ShiftRight']) panY = 0; // Prevent scrolling up/down if shift is pressed? No, let's keep it simple.
+      
+      const speed = (keys['ShiftLeft'] ? 30 : 15) * delta;
+
+      if (panX !== 0 || panY !== 0) {
+        const right = new THREE.Vector3();
+        const up = new THREE.Vector3();
+        const forward = new THREE.Vector3();
+        state.camera.matrix.extractBasis(right, up, forward);
+        
+        const panVector = new THREE.Vector3();
+        panVector.addScaledVector(right, panX);
+        panVector.addScaledVector(up, panY);
+        
+        panVector.normalize().multiplyScalar(speed);
+        state.camera.position.add(panVector);
+        controlsRef.current.target.add(panVector);
+      }
+      
+      // Zoom with Q/E
+      let zoom = 0;
+      if (keys['KeyQ']) zoom -= 1;
+      if (keys['KeyE']) zoom += 1;
+      
+      if (zoom !== 0) {
+        const forward = new THREE.Vector3();
+        state.camera.getWorldDirection(forward);
+        
+        const zoomVector = new THREE.Vector3();
+        zoomVector.addScaledVector(forward, zoom * speed);
+        
+        state.camera.position.add(zoomVector);
+        controlsRef.current.target.add(zoomVector);
+      }
+    }
+    
+    controlsRef.current.update();
+  });
+
+  return (
+    <OrbitControls 
+      ref={controlsRef}
+      enablePan={true}
+      enableZoom={true}
+      zoomSpeed={0.1}
+      maxDistance={100} 
+      minDistance={1} 
+      autoRotate={!isPlaying && viewMode === 'single' && !lockViewpoint && !resetViewFlag} 
+      autoRotateSpeed={0.2} 
+      makeDefault
+    />
+  );
+}
+
 export default function App() {
   const [stepIndex, setStepIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [speed, setSpeed] = useState(3500);
   const [viewMode, setViewMode] = useState<'single' | 'compare'>('single');
   const [tab, setTab] = useState<'simulation' | 'differential' | 'integral'>('simulation');
+  const [isContextMinimized, setIsContextMinimized] = useState(false);
+  const [lockViewpoint, setLockViewpoint] = useState(false);
+  const [resetViewFlag, setResetViewFlag] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   
   const [rounds, setRounds] = useState<number>(5);
   const [plaintext, setPlaintext] = useState<State>(unflatten([0x3, 0xB, 0x5, 0xC, 0x7, 0x7, 0xA, 0x4, 0x9, 0x2, 0x1, 0xF, 0x9, 0x7, 0x1, 0x8]));
@@ -551,6 +678,43 @@ export default function App() {
                 SWAP
               </button>
             </h2>
+
+            <div className="flex flex-col gap-2 mb-4 bg-[#090a0c] p-2 rounded border border-[#374151]">
+              <div className="text-[10px] text-gray-500 font-bold uppercase">Quick Test Vectors</div>
+              <div className="flex gap-2">
+                {[5, 6, 7, 8].map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => {
+                      const k0Str = "92f09952c625e3e9";
+                      const k1Str = "d7a060f714c0292b";
+                      const tweakStr = "ba912e6f1055fed2";
+                      
+                      const vectors: Record<number, string> = {
+                        5: "3b5c77a4921f9718",
+                        6: "d6522035c1c0c6c1",
+                        7: "60e43457311936fd",
+                        8: "308e8a07f168f517"
+                      };
+                      
+                      setRounds(r);
+                      setKey0(unflatten(k0Str.split('').map(x => parseInt(x, 16))));
+                      setKey1(unflatten(k1Str.split('').map(x => parseInt(x, 16))));
+                      setTweak(unflatten(tweakStr.split('').map(x => parseInt(x, 16))));
+                      setPlaintext(unflatten(vectors[r].split('').map(x => parseInt(x, 16))));
+                      setOperation('encrypt');
+                      setStepIndex(0);
+                      setIsPlaying(true);
+                      setSpeed(200); // Set a fast speed for tests
+                    }}
+                    className="flex-1 bg-cyan-900/40 hover:bg-cyan-800/60 text-cyan-200 text-[9px] py-1 rounded transition-colors border border-cyan-800"
+                  >
+                    M-{r}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="space-y-4">
               <div>
                 <label className="text-[9px] text-[#6b7280] block mb-1">ROUNDS</label>
@@ -633,14 +797,14 @@ export default function App() {
         </aside>
 
         {/* 3D Visualization Area */}
-        <div className="flex-1 bg-[#090a0c] relative flex flex-col overflow-hidden">
+        <div ref={containerRef} className="flex-1 bg-[#090a0c] relative flex flex-col overflow-hidden">
           <div className="absolute top-4 left-6 text-[11px] font-mono z-20 pointer-events-none">
             <div className="text-cyan-400">// ROUND_{currentStep.round} :: {stepIndex < history.length / 2 ? 'FORWARD_PASS' : 'BACKWARD_PASS'}</div>
             <div className="text-[#6b7280]">TRANSFORM: {currentStep.name}</div>
           </div>
 
           <Canvas shadows dpr={[1, 2]}>
-            <PerspectiveCamera makeDefault position={[0, viewMode === 'compare' ? 1.5 : 0, viewMode === 'compare' ? 22 : 12]} fov={40} />
+            <PerspectiveCamera makeDefault position={[0, viewMode === 'compare' ? 1.5 : 0, viewMode === 'compare' ? 26 : 16]} fov={40} />
             <ambientLight intensity={0.2} />
             <spotLight position={[10, 20, 10]} angle={0.2} penumbra={1} intensity={1.5} castShadow color="#06b6d4" />
             <pointLight position={[-10, -5, -5]} intensity={0.5} color="#0891b2" />
@@ -699,14 +863,12 @@ export default function App() {
                         <Float speed={1.1} rotationIntensity={0.1} floatIntensity={0.1}>
                           <MantisGrid 
                             state={currentStep.stepRc}
-                            previousState={(previousStep && JSON.stringify(previousStep.stepRc) !== JSON.stringify(currentStep.stepRc)) ? currentStep.stepRcPrev : currentStep.stepRc}
-                            label={`ROUND CONST RC_${currentStep.name.match(/Round\s+(\d+)/)?.[1] || 0}: (RC<<1)|FB=RC`}
+                            label={`ROUND CONST RC_${currentStep.name.match(/Round\s+(\d+)/)?.[1] || 0}`}
                             position={[7.5, 4, -12]}
                             stepIndex={stepIndex}
                             showValues={true}
                             speed={speed}
                             scale={0.8}
-                            opType="lfsr"
                           />
                         </Float>
                       )}
@@ -714,15 +876,12 @@ export default function App() {
                         <Float speed={1.1} rotationIntensity={0.1} floatIntensity={0.1}>
                           <MantisGrid 
                             state={currentStep.stepRk}
-                            previousState={(previousStep && JSON.stringify(previousStep.stepRk) !== JSON.stringify(currentStep.stepRk)) ? currentStep.stepRkShifted : currentStep.stepRk}
-                            label={`ROUND KEY RK_${currentStep.name.match(/Round\s+(\d+)/)?.[1] || 0}: (K1>>>4*r)\u2295RC=RK`}
+                            label={`ROUND KEY RK_${currentStep.name.match(/Round\s+(\d+)/)?.[1] || 0}: ${currentStep.name.includes("'") ? 'K_1 \u2295 \u03b1' : 'K_1'}`}
                             position={[-7.5, 4, -12]}
                             stepIndex={stepIndex}
                             showValues={true}
                             speed={speed}
                             scale={0.8}
-                            opType="rk_update"
-                            xorState={currentStep.stepRc}
                           />
                         </Float>
                       )}
@@ -779,28 +938,23 @@ export default function App() {
                         {currentStep.stepRc && (
                           <MantisGrid 
                             state={currentStep.stepRc}
-                            previousState={(previousStep && JSON.stringify(previousStep.stepRc) !== JSON.stringify(currentStep.stepRc)) ? currentStep.stepRcPrev : currentStep.stepRc}
-                            label={`ROUND CONST RC_${currentStep.name.match(/Round\s+(\d+)/)?.[1] || 0}: (RC<<1)|FB=RC`}
+                            label={`ROUND CONST RC_${currentStep.name.match(/Round\s+(\d+)/)?.[1] || 0}`}
                             position={[7.5, 4, -12]}
                             stepIndex={stepIndex}
                             showValues={true}
                             speed={speed}
                             scale={0.8}
-                            opType="lfsr"
                           />
                         )}
                         {currentStep.stepRk && (
                           <MantisGrid 
                             state={currentStep.stepRk}
-                            previousState={(previousStep && JSON.stringify(previousStep.stepRk) !== JSON.stringify(currentStep.stepRk)) ? currentStep.stepRkShifted : currentStep.stepRk}
-                            label={`ROUND KEY RK_${currentStep.name.match(/Round\s+(\d+)/)?.[1] || 0}: (K1>>>4*r)\u2295RC=RK`}
+                            label={`ROUND KEY RK_${currentStep.name.match(/Round\s+(\d+)/)?.[1] || 0}: ${currentStep.name.includes("'") ? 'K_1 \u2295 \u03b1' : 'K_1'}`}
                             position={[-7.5, 4, -12]}
                             stepIndex={stepIndex}
                             showValues={true}
                             speed={speed}
                             scale={0.8}
-                            opType="rk_update"
-                            xorState={currentStep.stepRc}
                           />
                         )}
                       </group>
@@ -819,37 +973,77 @@ export default function App() {
                 )}
               </group>
             </Center>
-
-            <OrbitControls 
-              enablePan={false} 
-              maxDistance={35} 
-              minDistance={5} 
-              autoRotate={!isPlaying && viewMode === 'single'} 
-              autoRotateSpeed={0.2} 
+            
+            <CameraManager
+              viewMode={viewMode}
+              isPlaying={isPlaying}
+              lockViewpoint={lockViewpoint}
+              resetViewFlag={resetViewFlag}
+              onResetDone={() => setResetViewFlag(false)}
             />
           </Canvas>
 
-          {/* Floating UI Elements */}
-          <div className="absolute top-6 right-6 w-48 bg-[#15171d] border border-[#374151] p-3 rounded shadow-2xl z-20 pointer-events-none">
-            <div className="text-[9px] uppercase text-[#6b7280] font-bold tracking-widest mb-2">Step Context</div>
-            <div className="space-y-1">
-              <div className="flex justify-between text-[10px]"><span className="text-[#6b7280]">TYPE:</span> <span className="text-white font-mono uppercase">{currentStep.type.replace('_', ' ')}</span></div>
-              <div className="flex justify-between text-[10px]"><span className="text-[#6b7280]">ROUND:</span> <span className="text-cyan-400 font-mono">{currentStep.round}</span></div>
-            </div>
-            <div className="mt-3 pt-3 border-t border-[#2a2d35]">
-              <div className="text-[9px] uppercase text-[#6b7280] font-bold tracking-widest mb-1 mt-1">Operation Detail</div>
-              <div className="text-[10px] text-[#94a3b8] leading-relaxed mb-3">
-                {getOperationDetail(currentStep.type, currentStep.name)}
-              </div>
-              <div className="w-full bg-[#090a0c] h-1 rounded overflow-hidden">
-                <div 
-                  className="bg-cyan-500 h-full transition-all duration-300" 
-                  style={{ width: `${((stepIndex + 1) / history.length) * 100}%` }}
-                />
-              </div>
-              <div className="text-[8px] mt-1 text-[#6b7280]">PROGRESS: {Math.round(((stepIndex + 1) / history.length) * 100)}%</div>
-            </div>
+          {/* Camera Controls */}
+          <div className="absolute bottom-4 left-6 z-20 flex gap-2">
+            <button 
+              onClick={() => setLockViewpoint(!lockViewpoint)}
+              className={cn("px-3 py-1.5 rounded text-[10px] font-bold border transition-colors flex items-center gap-2", lockViewpoint ? "bg-amber-500/20 text-amber-400 border-amber-500/50" : "bg-[#1e2229] border-[#374151] text-gray-300 hover:bg-[#2a2d35]")}
+            >
+              {lockViewpoint ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
+              {lockViewpoint ? 'VIEW LOCKED' : 'LOCK VIEW'}
+            </button>
+            <button
+              onClick={() => setResetViewFlag(true)}
+              className="px-3 py-1.5 rounded text-[10px] font-bold bg-[#1e2229] border border-[#374151] text-gray-300 hover:bg-[#2a2d35] flex items-center gap-2 transition-colors"
+            >
+              <Locate className="w-3 h-3" />
+              RESET VIEW
+            </button>
           </div>
+
+          {/* Floating UI Elements */}
+          <motion.div 
+            drag
+            dragConstraints={containerRef}
+            dragMomentum={false}
+            className="absolute top-6 right-6 w-48 bg-[#15171d] border border-[#374151] p-3 rounded shadow-2xl z-20 pointer-events-auto cursor-move shadow-black/50"
+          >
+            <div className="text-[9px] uppercase text-[#6b7280] font-bold tracking-widest mb-2 flex items-center justify-between">
+              <span>Step Context</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={() => setIsContextMinimized(!isContextMinimized)}
+                  className="text-[#6b7280] hover:text-white"
+                >
+                  {isContextMinimized ? <Maximize2 className="w-3 h-3 cursor-pointer" /> : <Minimize2 className="w-3 h-3 cursor-pointer" />}
+                </button>
+                <span className="text-[#374151] cursor-grab active:cursor-grabbing ml-1">⋮⋮</span>
+              </div>
+            </div>
+            
+            {!isContextMinimized && (
+              <>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px]"><span className="text-[#6b7280]">TYPE:</span> <span className="text-white font-mono uppercase">{currentStep.type.replace('_', ' ')}</span></div>
+                  <div className="flex justify-between text-[10px]"><span className="text-[#6b7280]">ROUND:</span> <span className="text-cyan-400 font-mono">{currentStep.round}</span></div>
+                </div>
+                <div className="mt-3 pt-3 border-t border-[#2a2d35]">
+                  <div className="text-[9px] uppercase text-[#6b7280] font-bold tracking-widest mb-1 mt-1">Operation Detail</div>
+                  <div className="text-[10px] text-[#94a3b8] leading-relaxed mb-3">
+                    {getOperationDetail(currentStep.type, currentStep.name)}
+                  </div>
+                  <div className="w-full bg-[#090a0c] h-1 rounded overflow-hidden">
+                    <div 
+                      className="bg-cyan-500 h-full transition-all duration-300" 
+                      style={{ width: `${((stepIndex + 1) / history.length) * 100}%` }}
+                    />
+                  </div>
+                  <div className="text-[8px] mt-1 text-[#6b7280]">PROGRESS: {Math.round(((stepIndex + 1) / history.length) * 100)}%</div>
+                </div>
+              </>
+            )}
+          </motion.div>
         </div>
 
         {/* Sidebar Right: Analytics & Reference */}
@@ -901,26 +1095,25 @@ export default function App() {
                     <div><span className="text-amber-500 font-bold">⊕</span> : Bitwise XOR (Exclusive OR)</div>
                     <div><span className="text-cyan-300 font-bold">S</span> : State (Current working matrix)</div>
                     <div><span className="text-cyan-300 font-bold">h^r(T)</span> : Tweak Matrix after applying permutation <span className="italic">h()</span> <span className="italic">r</span> times</div>
-                    <div><span className="text-cyan-300 font-bold">RK_r</span> : Round Key matrix derived from K1 and dynamic Round Constant RC_r</div>
-                    <div><span className="text-cyan-300 font-bold">RC_r</span> : Dynamic Round Constant derived from (K0 ⊕ Tweak) using a 64-bit LFSR</div>
+                    <div><span className="text-cyan-300 font-bold">RK_r</span> : Round Key matrix (derived directly from K1 or K1 ⊕ α)</div>
+                    <div><span className="text-cyan-300 font-bold">RC_r</span> : Fixed Round Constant from fractional digits of pi</div>
                   </div>
 
                   {currentStep.round > 0 && currentStep.round <= history.length && !currentStep.name.includes('Initial') && !currentStep.name.includes('Final') && (
                      <div className="mt-3 px-2 py-1.5 bg-[#2a2d35]/30 border border-[#374151] rounded flex flex-col gap-3">
                         <div className="text-center font-bold text-cyan-400 text-[10px] border-b border-[#2a2d35] pb-1">
-                          Derivation of Dynamic RC_r and RK_r
+                          Round Constants and Round Keys
                         </div>
                         <div className="text-[9px] text-white/80">
-                          <div className="font-bold text-white mb-1"><span className="text-cyan-300">RC_0</span> = K0 ⊕ Tweak</div>
-                          <div className="font-bold text-white mb-1"><span className="text-cyan-300">RC_r</span> = LFSR(RC_{"{"}r-1{"}"})</div>
+                          <div className="font-bold text-white mb-1"><span className="text-cyan-300">RC_r</span> : 64-bit Fixed Constant</div>
                           <div className="text-[8px] text-[#94a3b8] whitespace-normal leading-relaxed">
-                            Instead of fixed numbers from Pi, RC_r dynamically evolves via a 64-bit LFSR (applies left shift by 1, with feedback bit inserted at LSB. Feedback = bit 63 ⊕ bit 3 ⊕ bit 2 ⊕ bit 0).
+                            MANTIS uses fixed round constants derived from the fractional digits of pi. They do not change based on user keys or tweaks.
                           </div>
                         </div>
                         <div className="text-[9px] text-white/80">
-                          <div className="font-bold text-white mb-1"><span className="text-cyan-300">RK_r</span> = ROR(K_1, 4 × r) ⊕ RC_r</div>
+                          <div className="font-bold text-white mb-1"><span className="text-cyan-300">RK_r</span> = {currentStep.name.includes("'") ? "K_1 \u2295 \u03b1" : "K_1"}</div>
                           <div className="text-[8px] text-[#94a3b8] whitespace-normal leading-relaxed">
-                            The secondary key K1 is rotated right by 4 bits per round ({currentStep.name.includes("'") ? "inverse round" : (currentStep.round * 4) } bits total here) and XORed with the dynamic RC_r to form RK_r.
+                            The secondary key K1 is used as-is in the forward rounds. In the backward rounds, it is XORed with a fixed constant alpha to prevent related-key attacks.
                           </div>
                         </div>
                      </div>

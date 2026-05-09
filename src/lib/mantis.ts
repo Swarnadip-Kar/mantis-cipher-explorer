@@ -38,9 +38,9 @@ const RC = [
   [0x0, 0x8, 0x2, 0xe, 0xf, 0xa, 0x9, 0x8, 0xe, 0xc, 0x4, 0xe, 0x6, 0xc, 0x8, 0x9],
   [0x4, 0x5, 0x2, 0x8, 0x2, 0x1, 0xe, 0x6, 0x3, 0x8, 0xd, 0x0, 0x1, 0x3, 0x7, 0x7],
   [0xb, 0xe, 0x5, 0x4, 0x6, 0x6, 0xc, 0xf, 0x3, 0x4, 0xe, 0x9, 0x0, 0xc, 0x6, 0xc],
-  [0xc, 0x0, 0x7, 0x4, 0x3, 0x1, 0x8, 0x1, 0xf, 0xe, 0x2, 0x5, 0x1, 0x4, 0xb, 0x1],
-  [0x3, 0x3, 0xe, 0xd, 0x3, 0x9, 0x6, 0x4, 0x5, 0xd, 0x1, 0x6, 0x4, 0xc, 0x0, 0xd],
-  [0x3, 0x2, 0x4, 0xc, 0xa, 0x6, 0x9, 0xd, 0x8, 0x1, 0x0, 0xa, 0x7, 0xf, 0x0, 0xb],
+  [0xc, 0x0, 0xa, 0xc, 0x2, 0x9, 0xb, 0x7, 0xc, 0x9, 0x7, 0xc, 0x5, 0x0, 0xd, 0xd],
+  [0x3, 0xf, 0x8, 0x4, 0xd, 0x5, 0xb, 0x5, 0xb, 0x5, 0x4, 0x7, 0x0, 0x9, 0x1, 0x7],
+  [0x9, 0x2, 0x1, 0x6, 0xd, 0x5, 0xd, 0x9, 0x8, 0x9, 0x7, 0x9, 0xf, 0xb, 0x1, 0xb],
 ];
 
 // Matrix for MixColumns (Involutory)
@@ -129,26 +129,6 @@ function alphaConstant(round: number): State {
 
 const ALPHA_BIGINT = 0x243F6A8885A308D3n;
 
-function lfsr64(rc: bigint): bigint {
-  const feedback = ((rc >> 63n) ^ (rc >> 3n) ^ (rc >> 2n) ^ rc) & 1n;
-  return ((rc << 1n) & 0xFFFFFFFFFFFFFFFFn) | feedback;
-}
-
-function ror64(x: bigint, n: bigint): bigint {
-  const shift = n % 64n;
-  return ((x >> shift) | (x << (64n - shift))) & 0xFFFFFFFFFFFFFFFFn;
-}
-
-function generateRoundKeys(k1: bigint, RC: bigint[], r: number): bigint[] {
-  const rks: bigint[] = [];
-  for (let i = 0; i < r; i++) {
-    const shift = BigInt(4 * (i + 1));
-    const rk = ror64(k1, shift) ^ RC[i];
-    rks.push(rk);
-  }
-  return rks;
-}
-
 function toState(val: bigint): State {
   const s = createEmptyState();
   for (let i = 0; i < 16; i++) {
@@ -163,6 +143,11 @@ function fromState(s: State): bigint {
     val = (val << 4n) | BigInt(s[Math.floor(i / 4)][i % 4]);
   }
   return val;
+}
+
+function ror64(x: bigint, n: bigint): bigint {
+  const shift = n % 64n;
+  return ((x >> shift) | (x << (64n - shift))) & 0xFFFFFFFFFFFFFFFFn;
 }
 
 /**
@@ -214,17 +199,6 @@ export function mantisCipher(
   
   const T = tweak;
 
-  let r0 = k0_val ^ tweak_val;
-
-  let ri_vals: bigint[] = [];
-  let temp_r = r0;
-  for(let i = 0; i < rounds; i++) {
-    ri_vals.push(temp_r);
-    temp_r = lfsr64(temp_r);
-  }
-
-  let rks_vals = generateRoundKeys(k1_val, ri_vals, rounds);
-
   let hp: State[] = [T];
   for(let i = 0; i < rounds; i++) {
     hp.push(permuteTweak(hp[i]));
@@ -248,10 +222,8 @@ export function mantisCipher(
     // Forward half
     for (let r = 1; r <= rounds; r++) {
       currentTweak = hp[r];
-      currentStepRcPrev = toState(r === 1 ? r0 : ri_vals[r-2]);
-      currentStepRc = toState(ri_vals[r-1]);
-      currentStepRkShifted = toState(ror64(k1_val, BigInt(4 * r)));
-      currentStepRk = toState(rks_vals[r-1]);
+      currentStepRc = alphaConstant(r - 1);
+      currentStepRk = k1_n;
       
       currentState = subCells(currentState);
       push(`Round ${r} SubCells`, 'sub_cells', r);
@@ -260,14 +232,14 @@ export function mantisCipher(
       let rk_n = currentStepRk;
       let tk = xorState(hp[r], rk_n);
 
-      currentState = xorState(currentState, tk);
       currentState = xorState(currentState, rcState);
+      currentState = xorState(currentState, tk);
       
       let roundTweakey = xorState(rcState, tk);
       push(`Round ${r} AddKey/C/T`, 'add_tweakey', r, { roundTweakey });
 
       currentState = shuffleCells(currentState, false);
-      push(`Round ${r} ShuffleCells`, 'shuffle_cells', r);
+      push(`Round ${r} PermuteCells`, 'shuffle_cells', r);
 
       currentState = mixColumns(currentState);
       push(`Round ${r} MixColumns`, 'mix_columns', r);
@@ -286,16 +258,14 @@ export function mantisCipher(
     // Backward half
     for (let r = rounds; r >= 1; r--) {
       currentTweak = hp[r];
-      currentStepRcPrev = toState(r === 1 ? r0 : ri_vals[r-2]);
-      currentStepRkShifted = toState(ror64(k1_val, BigInt(4 * r)) ^ ALPHA_BIGINT);
-      currentStepRc = toState(ri_vals[r-1]);
-      currentStepRk = toState(rks_vals[r-1] ^ ALPHA_BIGINT);
+      currentStepRc = alphaConstant(r - 1);
+      currentStepRk = kb1_n; // k1 ^ alpha
       
       currentState = mixColumns(currentState);
       push(`Round ${r}' InvMixColumns`, 'mix_columns', rounds * 2 - r + 1);
       
       currentState = shuffleCells(currentState, true);
-      push(`Round ${r}' InvShuffleCells`, 'shuffle_cells', rounds * 2 - r + 1);
+      push(`Round ${r}' InvPermuteCells`, 'shuffle_cells', rounds * 2 - r + 1);
 
       let rcState = currentStepRc;
       let rk_n = currentStepRk;
@@ -333,10 +303,8 @@ export function mantisCipher(
     // Forward rounds
     for (let r = 1; r <= rounds; r++) {
       currentTweak = hp[r];
-      currentStepRcPrev = toState(r === 1 ? r0 : ri_vals[r-2]);
-      currentStepRkShifted = toState(ror64(k1_val, BigInt(4 * r)) ^ ALPHA_BIGINT);
-      currentStepRc = toState(ri_vals[r-1]);
-      currentStepRk = toState(rks_vals[r-1] ^ ALPHA_BIGINT);
+      currentStepRc = alphaConstant(r - 1);
+      currentStepRk = kb1_n; // k1 ^ alpha
       
       currentState = subCells(currentState);
       push(`Round ${r} SubCells`, 'sub_cells', r);
@@ -345,14 +313,14 @@ export function mantisCipher(
       let rk_n = currentStepRk;
       let tk = xorState(hp[r], rk_n);
 
-      currentState = xorState(currentState, tk);
       currentState = xorState(currentState, rcState);
+      currentState = xorState(currentState, tk);
       
       let roundTweakey = xorState(rcState, tk);
       push(`Round ${r} AddKey/C/T`, 'add_tweakey', r, { roundTweakey });
 
       currentState = shuffleCells(currentState, false);
-      push(`Round ${r} ShuffleCells`, 'shuffle_cells', r);
+      push(`Round ${r} PermuteCells`, 'shuffle_cells', r);
 
       currentState = mixColumns(currentState);
       push(`Round ${r} MixColumns`, 'mix_columns', r);
@@ -375,12 +343,10 @@ export function mantisCipher(
       push(`Round ${r}' InvMixColumns`, 'mix_columns', rounds * 2 - r + 1);
       
       currentState = shuffleCells(currentState, true);
-      push(`Round ${r}' InvShuffleCells`, 'shuffle_cells', rounds * 2 - r + 1);
+      push(`Round ${r}' InvPermuteCells`, 'shuffle_cells', rounds * 2 - r + 1);
 
-      currentStepRcPrev = toState(r === 1 ? r0 : ri_vals[r-2]);
-      currentStepRkShifted = toState(ror64(k1_val, BigInt(4 * r)));
-      currentStepRc = toState(ri_vals[r-1]);
-      currentStepRk = toState(rks_vals[r-1]);
+      currentStepRc = alphaConstant(r - 1);
+      currentStepRk = k1_n;
       let rcState = currentStepRc;
       let rk_n = currentStepRk;
       let tk = xorState(hp[r], rk_n);
