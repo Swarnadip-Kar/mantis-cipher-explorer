@@ -2,6 +2,13 @@
 
 A high-performance, interactive 3D simulation and analysis tool for the Mantis block cipher. Built with React and React Three Fiber, this tool provides a mathematically accurate visualization of the cryptographic primitives defined in the official CRYPTO 2016 specification.
 
+## Academic Context
+
+This simulation was developed as a project for the **CSL505 Cryptography** course at the **Indian Institute of Technology Bhilai (IIT Bhilai)** during the **Winter 2026** term.
+
+- **Professor:** Dr. Dhiman Saha, IIT Bhilai
+- **Simulation By:** Swarnadip Kar - IIT Bhilai BTech CSE 2027 Batch
+
 ## Features
 
 - **Interactive 3D Simulation**: Step-by-step 3D visualization of the cipher's internal state matrix during encryption and decryption.
