@@ -566,14 +566,7 @@ export default function App() {
   }, [history]);
 
   useEffect(() => {
-    if (stepIndex === history.length - 1 && isPlaying) {
-      confetti({
-        particleCount: 150,
-        spread: 70,
-        origin: { y: 0.6 },
-        colors: NIBBLE_COLORS,
-      });
-    }
+    // Confetti removed
   }, [stepIndex, history.length, isPlaying]);
 
   const currentStep = history[stepIndex] || history[0];
@@ -611,8 +604,11 @@ export default function App() {
       <header className="h-14 border-b border-[#2a2d35] flex items-center justify-between px-6 bg-[#15171d] z-50 shadow-lg">
         <div className="flex items-center space-x-4">
           <div className="w-3 h-3 rounded-full bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.6)] animate-pulse"></div>
-          <h1 className="text-lg font-bold tracking-tight text-white uppercase flex items-center gap-2">
-            MANTIS-{rounds} <span className="text-cyan-400 font-mono text-sm font-normal opacity-70 whitespace-nowrap">BLOCK CIPHER ANALYZER</span>
+          <h1 className="text-lg font-bold tracking-tight text-white uppercase flex flex-col justify-center">
+            <div className="flex items-center gap-2">
+              MANTIS-{rounds} <span className="text-cyan-400 font-mono text-sm font-normal opacity-70 whitespace-nowrap">BLOCK CIPHER SIMULATOR</span>
+            </div>
+            <span className="text-[10px] text-cyan-100 drop-shadow-[0_0_8px_rgba(6,182,212,0.8)] tracking-wider font-mono hidden sm:block">CSL505 Cryptography - Indian Institute of Technology Bhilai, Winter 2026</span>
           </h1>
         </div>
         
@@ -705,7 +701,6 @@ export default function App() {
                       setOperation('encrypt');
                       setStepIndex(0);
                       setIsPlaying(true);
-                      setSpeed(200); // Set a fast speed for tests
                     }}
                     className="flex-1 bg-cyan-900/40 hover:bg-cyan-800/60 text-cyan-200 text-[9px] py-1 rounded transition-colors border border-cyan-800"
                   >
@@ -1315,6 +1310,10 @@ export default function App() {
       <div className="fixed inset-0 pointer-events-none -z-10 overflow-hidden">
         <div className="absolute top-0 right-0 w-[800px] h-[800px] bg-cyan-500/5 blur-[150px] rounded-full translate-x-1/2 -translate-y-1/2" />
         <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-indigo-500/5 blur-[120px] rounded-full -translate-x-1/2 translate-y-1/2" />
+      </div>
+
+      <div className="h-6 shrink-0 flex items-center justify-center bg-[#0c0d0f] text-[9px] text-[#6b7280] border-t border-[#2a2d35] z-50 w-full text-center px-4">
+        CSL505 Cryptography - Indian Institute of Technology Bhilai, Winter 2026. Professor Dr. Dhiman Saha IIT Bhilai; Simulation By Swarnadip Kar - IIT Bhilai BTech CSE 2027 Batch
       </div>
     </div>
   );

@@ -235,7 +235,7 @@ export function DifferentialAttackTab() {
         {activeView === 'propagation' && (
           <div className="p-3 bg-black/30 border border-[#2a2d35] rounded mt-4">
              <h3 className="text-[10px] font-bold text-white mb-2 uppercase">Input Difference (ΔX)</h3>
-             <p className="text-[10px] text-gray-500 mb-3">Click and type (0-F) to set the initial difference state.</p>
+             <p className="text-[10px] text-gray-500 mb-3">Click and type (0-F) to set the initial difference state. We take a greedy approach, selecting the highest differential possible.</p>
              <div className="grid grid-cols-4 gap-1 p-2 bg-[#1a1c22] border border-[#2a2d35] rounded w-full">
                {startDiff.map((val, i) => (
                  <input 
@@ -295,8 +295,8 @@ export function DifferentialAttackTab() {
               Lighter cells mean higher probability. The MIDORI S-box has a max differential probability of 2⁻².
             </p>
             
-            <div className="overflow-x-auto">
-              <table className="w-full text-center border-collapse">
+            <div className="overflow-x-auto flex justify-center w-full">
+              <table className="text-center border-collapse w-auto">
                 <thead>
                   <tr>
                     <th className="p-2 border border-[#2a2d35] bg-[#1a1c22] text-[#6b7280]">ΔX \ ΔY</th>
@@ -387,7 +387,7 @@ export function DifferentialAttackTab() {
               
               <div className="absolute bottom-6 left-1/2 -translate-x-1/2 pointer-events-none text-center">
                 <p className="text-white/60 text-sm bg-black/40 px-4 py-2 rounded-full border border-white/5 backdrop-blur shadow-xl">
-                  {currentStep.opType === 'sub_cells' && "S-box replaces differences with most probable output difference."}
+                  {currentStep.opType === 'sub_cells' && "S-box replaces differences with most probable output difference (greedy approach)."}
                   {currentStep.opType === 'shuffle_cells' && "PermuteCells deterministically shuffles the active differences."}
                   {currentStep.opType === 'mix_columns' && "MixColumns sum diffuses the active difference to multiple cells."}
                   {currentStep.opType === 'initial' && "Starting with one active cell. The goal is to track active S-boxes."}

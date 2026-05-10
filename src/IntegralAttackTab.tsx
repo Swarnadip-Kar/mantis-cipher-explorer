@@ -190,6 +190,18 @@ export function IntegralAttackTab() {
              </div>
           </div>
         </div>
+
+        <div className="p-3 bg-black/30 border border-[#2a2d35] rounded mt-4">
+          <h3 className="text-[10px] font-bold text-white mb-2 uppercase">Transition Rules</h3>
+          <ul className="text-[10px] text-gray-400 space-y-2 list-none">
+            <li>
+              <strong className="text-white">SubCells:</strong> S-boxes are bijective. An 'All' property (A) permutes perfectly to 'A'. A Constant (C) remains 'C'. A Balanced (B) property loses its balance, becoming Unknown (U).
+            </li>
+            <li>
+              <strong className="text-white">MixColumns:</strong> Linear combination. If 'U' is present, the result is 'U'. Summing exactly one 'A' with 'C's yields 'A'. Summing multiple 'A's or any 'B' yields 'B'. All 'C' yields 'C'.
+            </li>
+          </ul>
+        </div>
         
         <div className="p-3 bg-black/30 border border-[#2a2d35] rounded mt-4">
           <h3 className="text-[10px] font-bold text-white mb-2 uppercase">Configuration</h3>
